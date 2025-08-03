@@ -41,61 +41,10 @@ def parse_args():
     parser.add_argument("--output-dir", default="results", help="Output directory for results")
     parser.add_argument("--num-examples", type=int, default=3, help="Number of examples for few-shot judges")
     parser.add_argument("--num-samples", type=int, required=False, help="Number of samples to process from the CSV")
+    parser.add_argument("--annotated-samples", type=str, required=True, 
+                        help="Path to the JSON file with annotated training samples")
     
     return parser.parse_args()
-
-
-def transform_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Transform the original dataframe to the required format with pass/fail pairs."""
-    transformed_df = pd.DataFrame()
-
-    for _, row in df.iterrows():
-        complete_row = {
-            'topic': row['topic'],
-            'question': row['question'], 
-            'grading_notes': row['grading_notes'],
-            'target': 'pass',
-            'response': row['complete_answer'],
-            'notes': None
-        }
-        
-        modified_row = {
-            'topic': row['topic'],
-            'question': row['question'],
-            'grading_notes': row['grading_notes'], 
-            'target': 'fail',
-            'response': row['modified_answer'],
-            'notes': row['changes_made']
-        }
-        
-        if 'verdict' in row and not pd.isna(row['verdict']):
-            modified_row['verdict'] = row['verdict']
-        
-        if 'reason' in row and not pd.isna(row['reason']):
-            modified_row['reason'] = row['reason']
-        
-        transformed_df = pd.concat([transformed_df, pd.DataFrame([complete_row, modified_row])], ignore_index=True)
-
-    return transformed_df.reset_index(drop=True)
-
-
-def transform_train_samples(df: pd.DataFrame) -> t.List[dict]:
-    """Transform training samples to the required format."""
-    samples = []
-    for _, row in df.iterrows():
-        sample = {
-            "input": {
-                "response": row["response"],
-                "grading_notes": row["grading_notes"]
-            },
-            "output": {
-                "reason": row.get("notes", ""),
-                "value": row["target"]
-            }
-        }
-        sample["output"]["reason"] = sample["output"]["reason"] if sample["output"]["reason"] else ""
-        samples.append(sample)
-    return samples
 
 
 def get_llm(provider: str, model: str) -> BaseRagasLLM:
@@ -275,15 +224,7 @@ async def main():
     
     # Load and transform data
     df = pd.read_csv(args.csv, nrows=args.num_samples if args.num_samples else None)
-    transformed_df = transform_dataframe(df)
-    
-    # Split data for training and testing
-    train_samples_index = int(transformed_df.shape[0] * 0.20)
-    train_samples = transformed_df.iloc[-train_samples_index:]
-    test_samples = transformed_df.iloc[:-train_samples_index]
-    
-    # Prepare training examples
-    annotated_samples = transform_train_samples(train_samples)
+    annotated_samples = json.load(open(args.annotated_samples, "r"))
     
     # Get LLM
     llm = get_llm(args.provider, args.model)
@@ -298,7 +239,7 @@ async def main():
     for judge_type in judge_types:
         print(f"\nRunning {judge_type} judge...")
         judge = get_judge(judge_type, annotated_samples, args.num_examples)
-        await score_and_save(test_samples, llm, judge, args.output_dir)
+        await score_and_save(df, llm, judge, args.output_dir)
 
 
 if __name__ == "__main__":
