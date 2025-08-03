@@ -17,10 +17,15 @@ import instructor
 import pandas as pd
 from openai import AsyncOpenAI
 from sklearn.metrics import (
-    accuracy_score, precision_recall_fscore_support,  
+    accuracy_score, precision_recall_fscore_support,
     cohen_kappa_score, matthews_corrcoef, confusion_matrix
 )
-from tqdm import tqdm
+from rich.console import Console
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn, 
+    TaskProgressColumn, TimeElapsedColumn
+)
+from rich.panel import Panel
 
 from ragas_experimental.embeddings import OpenAIEmbeddings
 from ragas_experimental.llms import BaseRagasLLM
@@ -41,61 +46,10 @@ def parse_args():
     parser.add_argument("--output-dir", default="results", help="Output directory for results")
     parser.add_argument("--num-examples", type=int, default=3, help="Number of examples for few-shot judges")
     parser.add_argument("--num-samples", type=int, required=False, help="Number of samples to process from the CSV")
+    parser.add_argument("--annotated-samples", type=str, required=True, 
+                        help="Path to the JSON file with annotated training samples")
     
     return parser.parse_args()
-
-
-def transform_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Transform the original dataframe to the required format with pass/fail pairs."""
-    transformed_df = pd.DataFrame()
-
-    for _, row in df.iterrows():
-        complete_row = {
-            'topic': row['topic'],
-            'question': row['question'], 
-            'grading_notes': row['grading_notes'],
-            'target': 'pass',
-            'response': row['complete_answer'],
-            'notes': None
-        }
-        
-        modified_row = {
-            'topic': row['topic'],
-            'question': row['question'],
-            'grading_notes': row['grading_notes'], 
-            'target': 'fail',
-            'response': row['modified_answer'],
-            'notes': row['changes_made']
-        }
-        
-        if 'verdict' in row and not pd.isna(row['verdict']):
-            modified_row['verdict'] = row['verdict']
-        
-        if 'reason' in row and not pd.isna(row['reason']):
-            modified_row['reason'] = row['reason']
-        
-        transformed_df = pd.concat([transformed_df, pd.DataFrame([complete_row, modified_row])], ignore_index=True)
-
-    return transformed_df.reset_index(drop=True)
-
-
-def transform_train_samples(df: pd.DataFrame) -> t.List[dict]:
-    """Transform training samples to the required format."""
-    samples = []
-    for _, row in df.iterrows():
-        sample = {
-            "input": {
-                "response": row["response"],
-                "grading_notes": row["grading_notes"]
-            },
-            "output": {
-                "reason": row.get("notes", ""),
-                "value": row["target"]
-            }
-        }
-        sample["output"]["reason"] = sample["output"]["reason"] if sample["output"]["reason"] else ""
-        samples.append(sample)
-    return samples
 
 
 def get_llm(provider: str, model: str) -> BaseRagasLLM:
@@ -205,18 +159,36 @@ async def score_df(df: pd.DataFrame, llm: BaseRagasLLM, metric: Metric) -> pd.Da
     result_df['verdict'] = None
     result_df['reason'] = None
     
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc=f"Scoring with {metric.name}"):
-        response = row['response']
-        grading_notes = row['grading_notes']
-        
-        score = await metric.ascore(
-            llm=llm,
-            response=response,
-            grading_notes=grading_notes
+    console = Console()
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        refresh_per_second=4
+    ) as progress:
+        task = progress.add_task(
+            f"[green]Scoring with {metric.name}...",
+            total=len(df)
         )
         
-        result_df.at[idx, 'verdict'] = score.value
-        result_df.at[idx, 'reason'] = score.reason
+        for idx, row in df.iterrows():
+            response = row['response']
+            grading_notes = row['grading_notes']
+            
+            score = await metric.ascore(
+                llm=llm,
+                response=response,
+                grading_notes=grading_notes
+            )
+            
+            result_df.at[idx, 'verdict'] = score.value
+            result_df.at[idx, 'reason'] = score.reason
+            
+            progress.update(task, advance=1)
     
     return result_df
 
@@ -266,27 +238,36 @@ async def score_and_save(df: pd.DataFrame, llm: BaseRagasLLM, metric: Metric, ou
     with open(output_path / f"{file_name}.json", 'w') as f:
         json.dump(metrics, f, indent=4)
     
-    print(f"Results saved to {output_path / file_name}")
+    console = Console()
+    console.print(f"✅ Results saved to {output_path / file_name}", style="bold green")
 
 
 async def main():
     """Main function to run the benchmark."""
     args = parse_args()
+    console = Console()
+    
+    # Display startup info
+    console.print(Panel(
+        f"🤖 LLM Judge Benchmark\n"
+        f"Provider: {args.provider}\n"
+        f"Model: {args.model}\n"
+        f"CSV: {args.csv}",
+        title="Benchmark Configuration",
+        border_style="blue"
+    ))
     
     # Load and transform data
-    df = pd.read_csv(args.csv, nrows=args.num_samples if args.num_samples else None)
-    transformed_df = transform_dataframe(df)
+    with console.status("[bold green]Loading data...", spinner="dots"):
+        df = pd.read_csv(args.csv, nrows=args.num_samples if args.num_samples else None)
+        with open(args.annotated_samples, "r", encoding="utf-8") as f:
+            annotated_samples = json.load(f)
     
-    # Split data for training and testing
-    train_samples_index = int(transformed_df.shape[0] * 0.20)
-    train_samples = transformed_df.iloc[-train_samples_index:]
-    test_samples = transformed_df.iloc[:-train_samples_index]
-    
-    # Prepare training examples
-    annotated_samples = transform_train_samples(train_samples)
+    console.print(f"📊 Loaded {len(df)} samples", style="bold cyan")
     
     # Get LLM
-    llm = get_llm(args.provider, args.model)
+    with console.status("[bold green]Initializing LLM...", spinner="dots"):
+        llm = get_llm(args.provider, args.model)
     
     # Determine which judges to run
     if args.judges:
@@ -294,11 +275,18 @@ async def main():
     else:
         judge_types = ["vanilla", "fixed_few_shot", "random_few_shot", "dynamic_few_shot"]
     
+    console.print(f"🔍 Running {len(judge_types)} judge types: {', '.join(judge_types)}", style="bold yellow")
+    
     # Run benchmarks for each judge type
-    for judge_type in judge_types:
-        print(f"\nRunning {judge_type} judge...")
-        judge = get_judge(judge_type, annotated_samples, args.num_examples)
-        await score_and_save(test_samples, llm, judge, args.output_dir)
+    for i, judge_type in enumerate(judge_types, 1):
+        console.print(f"\n[{i}/{len(judge_types)}] 🎯 Starting {judge_type} judge...", style="bold magenta")
+        
+        with console.status(f"[bold green]Preparing {judge_type} judge...", spinner="dots"):
+            judge = get_judge(judge_type, annotated_samples, args.num_examples)
+        
+        await score_and_save(df, llm, judge, args.output_dir)
+    
+    console.print("\n🎉 All benchmarks completed!", style="bold green")
 
 
 if __name__ == "__main__":
