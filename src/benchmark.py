@@ -106,14 +106,14 @@ def fixed_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
     return my_metric
 
 
-def random_few_shot_judge(examples: t.List[dict]):
+def random_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
     """Create a judge with random few-shot examples."""
     my_metric = DiscreteMetric(
         name="random_few_shot_correctness",
         prompt=PROMPT,
         allowed_values=["pass", "fail"],
     )
-    my_metric.prompt = RandomFewShotPrompt.from_prompt(my_metric.prompt, num_examples=3)
+    my_metric.prompt = RandomFewShotPrompt.from_prompt(my_metric.prompt, num_examples=num_examples)
     for example in examples:
         my_metric.prompt.add_example(
             inputs=example["input"],
@@ -122,7 +122,7 @@ def random_few_shot_judge(examples: t.List[dict]):
     return my_metric
 
 
-def dynamic_few_shot_judge(examples: t.List[dict]):
+def dynamic_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
     """Create a judge with dynamic few-shot examples based on embeddings."""
     my_metric = DiscreteMetric(
         name="dynamic_few_shot_correctness",
@@ -130,7 +130,7 @@ def dynamic_few_shot_judge(examples: t.List[dict]):
         allowed_values=["pass", "fail"],
     )
     embedding = OpenAIEmbeddings(model="text-embedding-3-small", client=AsyncOpenAI())
-    my_metric.prompt = DynamicFewShotPrompt.from_prompt(my_metric.prompt, num_examples=3, embedding_model=embedding)
+    my_metric.prompt = DynamicFewShotPrompt.from_prompt(my_metric.prompt, num_examples=num_examples, embedding_model=embedding)
     for example in examples:
         my_metric.prompt.add_example(
             inputs=example["input"],
@@ -146,9 +146,9 @@ def get_judge(metric_type: str, examples: t.List[dict], num_examples: int = 3):
     elif metric_type == "fixed_few_shot":
         return fixed_few_shot_judge(examples, num_examples)
     elif metric_type == "random_few_shot":
-        return random_few_shot_judge(examples)
+        return random_few_shot_judge(examples, num_examples)
     elif metric_type == "dynamic_few_shot":
-        return dynamic_few_shot_judge(examples)
+        return dynamic_few_shot_judge(examples, num_examples)
     else:
         raise ValueError(f"Unknown metric type: {metric_type}")
 
