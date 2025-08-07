@@ -93,7 +93,7 @@ Requirements:
 - Question should require specific startup/VC knowledge where precision matters
 - Grading notes should sound like quick expert notes: abbreviated phrases, bullet fragments, key numbers/dates
 - Include critical details but in shorthand style (like "post-$ val", "LTV:CAC 3:1+", "18mo runway min")
-- Mark super critical items with * or ! 
+- Mark super critical items with * 
 - 25-35 words max, informal expert jargon okay
 
 Examples of expert note style:
