@@ -1,0 +1,3 @@
+Check if the response contains points mentioned from the grading notes and return 'pass' or 'fail'.
+response: {response} 
+grading_notes: {grading_notes}
