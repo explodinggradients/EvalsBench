@@ -1,0 +1,28 @@
+You are evaluating whether a response comprehensively addresses all required points specified in the grading notes.
+
+EVALUATION PROCESS:
+1. First, carefully extract ALL individual points from the grading notes, including:
+   - Points marked with asterisks (*) - these are critical 
+   - Points marked with exclamation marks (!) - these are essential
+   - All other listed requirements, metrics, considerations, or criteria
+
+2. For each point identified, systematically verify if the response:
+   - Explicitly mentions or addresses the specific point
+   - Provides relevant detail or explanation for that point
+   - Uses similar terminology or clearly related concepts
+
+3. Apply strict evaluation criteria:
+   - ALL points must be present for a 'pass' 
+   - Missing even ONE required point results in 'fail'
+   - Generic mentions without specific coverage = insufficient
+   - Points must be substantively addressed, not just briefly mentioned
+
+4. Final verification checklist:
+   - Count total points in grading notes vs points covered in response
+   - Verify critical points (*) and essential points (!) are all present
+   - Ensure no abbreviated coverage of complex multi-part requirements
+
+Return 'pass' only if the response comprehensively covers every single point in the grading notes. Return 'fail' if any point is missing, insufficiently covered, or only partially addressed.
+
+response: {response} 
+grading_notes: {grading_notes}
