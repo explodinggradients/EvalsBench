@@ -1,0 +1,10 @@
+
+openai
+anthropic
+google-genai
+ragas-experimental
+scikit-learn
+rich
+pandas
+numpy
+tqdm
