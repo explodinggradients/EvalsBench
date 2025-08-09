@@ -47,8 +47,10 @@ def parse_args():
     parser.add_argument("--num-examples", type=int, default=3, help="Number of examples for few-shot judges")
     parser.add_argument("--num-samples", type=int, required=False, help="Number of samples to process from the CSV")
     parser.add_argument("--annotated-samples", type=str, required=True, 
-                        help="Path to the JSON file with annotated training samples")
-    
+                        help="Path to the csv file with annotated training samples")
+    parser.add_argument("--experiment-name", type=str, default="llm_judge_benchmark",
+                        help="Name of the MLflow experiment")
+
     return parser.parse_args()
 
 
@@ -66,11 +68,11 @@ def get_llm(provider: str, model: str) -> BaseRagasLLM:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required for Anthropic provider")
         from anthropic import AsyncAnthropic
-        client = AsyncAnthropic(api_key)
-        client = instructor.from_anthropic(client=client)
+        client = AsyncAnthropic(api_key=api_key)
+        client = instructor.from_anthropic(client=client, max_tokens=8000)
     elif provider == "gemini":
         from google import genai
-        client = genai.Client()
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         client = instructor.from_genai(client=client, use_async=True)
     else:
         raise ValueError(f"Unknown provider: {provider}")
@@ -79,7 +81,14 @@ def get_llm(provider: str, model: str) -> BaseRagasLLM:
     return llm
 
 
-PROMPT = "Check if the response contains points mentioned from the grading notes and return 'pass' or 'fail'.\nResponse: {response} Grading Notes: {grading_notes}"
+# Load prompt from external file
+def load_prompt(file):
+    """Load the prompt from src/prompt.txt"""
+    prompt_path = Path(__file__).parent / f"{file}.txt"
+    with open(prompt_path, 'r', encoding='utf-8') as f:
+        return f.read().strip()
+
+PROMPT = load_prompt("prompt")
 
 
 def vanilla_judge():
@@ -87,6 +96,15 @@ def vanilla_judge():
     return DiscreteMetric(
         name="vanilla_correctness",
         prompt=PROMPT,
+        allowed_values=["pass", "fail"],
+    )
+    
+
+def optimised_judge():
+    """Create an optimised judge with a specific prompt."""
+    return DiscreteMetric(
+        name="optimised_correctness",
+        prompt=load_prompt("optimised_prompt"),
         allowed_values=["pass", "fail"],
     )
 
@@ -102,18 +120,18 @@ def fixed_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
         my_metric.prompt.add_example(
             inputs=example["input"],
             output=example["output"]    
-        ) 
+        )
     return my_metric
 
 
-def random_few_shot_judge(examples: t.List[dict]):
+def random_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
     """Create a judge with random few-shot examples."""
     my_metric = DiscreteMetric(
         name="random_few_shot_correctness",
         prompt=PROMPT,
         allowed_values=["pass", "fail"],
     )
-    my_metric.prompt = RandomFewShotPrompt.from_prompt(my_metric.prompt, num_examples=3)
+    my_metric.prompt = RandomFewShotPrompt.from_prompt(my_metric.prompt, num_examples=num_examples)
     for example in examples:
         my_metric.prompt.add_example(
             inputs=example["input"],
@@ -122,7 +140,7 @@ def random_few_shot_judge(examples: t.List[dict]):
     return my_metric
 
 
-def dynamic_few_shot_judge(examples: t.List[dict]):
+def dynamic_few_shot_judge(examples: t.List[dict], num_examples: int = 3):
     """Create a judge with dynamic few-shot examples based on embeddings."""
     my_metric = DiscreteMetric(
         name="dynamic_few_shot_correctness",
@@ -130,7 +148,7 @@ def dynamic_few_shot_judge(examples: t.List[dict]):
         allowed_values=["pass", "fail"],
     )
     embedding = OpenAIEmbeddings(model="text-embedding-3-small", client=AsyncOpenAI())
-    my_metric.prompt = DynamicFewShotPrompt.from_prompt(my_metric.prompt, num_examples=3, embedding_model=embedding)
+    my_metric.prompt = DynamicFewShotPrompt.from_prompt(my_metric.prompt, num_examples=num_examples, embedding_model=embedding)
     for example in examples:
         my_metric.prompt.add_example(
             inputs=example["input"],
@@ -146,9 +164,11 @@ def get_judge(metric_type: str, examples: t.List[dict], num_examples: int = 3):
     elif metric_type == "fixed_few_shot":
         return fixed_few_shot_judge(examples, num_examples)
     elif metric_type == "random_few_shot":
-        return random_few_shot_judge(examples)
+        return random_few_shot_judge(examples, num_examples)
     elif metric_type == "dynamic_few_shot":
-        return dynamic_few_shot_judge(examples)
+        return dynamic_few_shot_judge(examples, num_examples)
+    elif metric_type == "optimised":
+        return optimised_judge()
     else:
         raise ValueError(f"Unknown metric type: {metric_type}")
 
@@ -240,6 +260,26 @@ async def score_and_save(df: pd.DataFrame, llm: BaseRagasLLM, metric: Metric, ou
     
     console = Console()
     console.print(f"✅ Results saved to {output_path / file_name}", style="bold green")
+    
+    
+
+def transform_train_samples(df: pd.DataFrame) -> pd.DataFrame:
+    """Transform the training samples to the required format."""
+    samples = []
+    for index, row in df.iterrows():
+        sample = {
+            "input":{
+                "response": row["response"],
+                "grading_notes": row["grading_notes"]
+            },
+            "output":{
+                "reason": row["reason"],
+                "value": row["target"]
+            }
+        }
+        samples.append(sample)
+        sample["output"]["reason"] = sample["output"]["reason"] if sample["output"]["reason"] else ""
+    return samples
 
 
 async def main():
@@ -247,6 +287,8 @@ async def main():
     args = parse_args()
     console = Console()
     
+    mlflow.set_experiment(args.experiment_name)
+
     # Display startup info
     console.print(Panel(
         f"🤖 LLM Judge Benchmark\n"
@@ -260,9 +302,8 @@ async def main():
     # Load and transform data
     with console.status("[bold green]Loading data...", spinner="dots"):
         df = pd.read_csv(args.csv, nrows=args.num_samples if args.num_samples else None)
-        with open(args.annotated_samples, "r", encoding="utf-8") as f:
-            annotated_samples = json.load(f)
-    
+        annotated_df = pd.read_csv(args.annotated_samples)
+        annotated_samples = transform_train_samples(annotated_df)
     console.print(f"📊 Loaded {len(df)} samples", style="bold cyan")
     
     # Get LLM
