@@ -1,4 +1,4 @@
-# 🤖 LLM Judge Research
+# EvalsBench
 
 A comprehensive benchmark suite for evaluating the effectiveness of Large Language Models (LLMs) as judges in Q&A assessment tasks. This project compares different prompting strategies and evaluates their performance across multiple providers and models.
 
